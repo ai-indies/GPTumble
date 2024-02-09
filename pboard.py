@@ -13,7 +13,7 @@ import logging
 from collections import namedtuple
 import random
 
-DEBUG = 0
+DEBUG = 1
 
 
 logger = logging.Logger(f"Board logger", logging.DEBUG if DEBUG else logging.INFO)
@@ -30,32 +30,11 @@ SIDE_VAL_TO_SIDE = {side.val: side for side in SIDES}
 
 class Board:
     rng = np.random.default_rng()
+    block_chars = np.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
         self.width = width
         self.height = height
-        self.params = {
-            LEFT_SIDE: {
-                "ball_from_L": {
-                    "ball_to_l": self._init_weight(0, offbalance),
-                    "to_state_R": self._init_weight(1, offbalance),
-                },
-                "ball_from_R": {
-                    "ball_to_l": self._init_weight(0, offbalance),
-                    "to_state_R": self._init_weight(1, offbalance),
-                },
-            },
-            RIGHT_SIDE: {
-                "ball_from_L": {
-                    "ball_to_l": self._init_weight(1, offbalance),
-                    "to_state_R": self._init_weight(0, offbalance),
-                },
-                "ball_from_R": {
-                    "ball_to_l": self._init_weight(1, offbalance),
-                    "to_state_R": self._init_weight(0, offbalance),
-                },
-            },
-        }
 
         self.nd_states = np.random.choice(
             [s.val for s in SIDES], size=(self.width, self.height), p=[1 - R_init_chance, R_init_chance]
@@ -69,7 +48,7 @@ class Board:
         self.switch_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
 
     def _render(self, ball_pos=None) -> str:
-        board_as_slash = self._one_char_board
+        board_as_slash = self._one_char_board()
         if ball_pos:
             board_as_slash[ball_pos[0]] = (
                 board_as_slash[ball_pos[0]][: ball_pos[1] + ball_pos[0] % 2]
@@ -84,9 +63,25 @@ class Board:
     def _state_to_slash(state):
         return "\\" if state.name == "L" else "/"
 
-    @property
     def _one_char_board(self):
         return [[self._state_to_slash(pos) for pos in row[: self.row_width(rn)]] for rn, row in enumerate(self.states)]
+
+    _switch_render_map = {0: "\\_", 1: "_/"}
+
+    def _two_char_board(self):
+        return [
+            [self._switch_render_map[pos_state] for pos_state in row[: self.row_width(rn)]]
+            for rn, row in enumerate(self.nd_states)
+        ]
+
+    def _render_with_distr(self, distr) -> str:
+        two_char_board = self._two_char_board()
+        return "\n".join(
+            (self._render_ball_distr(distr[rn]) if rn < len(distr) else "")
+            + ("" if self.is_wide_row(rn) else "  ")
+            + "  ".join(row)
+            for rn, row in enumerate(two_char_board)
+        )
 
     def __repr__(self):
         return self._render()
@@ -168,18 +163,25 @@ class Board:
         in_distr = self._row_n_zeros(0)
         in_distr[LEFT_SIDE.val, pos] = 1.0
 
-        for row_n in range(self.height):
-            next_r_prob = self._nd_roll_one_row(in_distr, row_n)
+        per_row_distrs = [in_distr]
 
-            if self.is_wide_row(row_n):  # wide row
-                in_row_pos += move.val - 1
-            else:
-                in_row_pos += move.val
+        if DEBUG:
+            print(self._render_with_distr(per_row_distrs))
+
+        for row_n in range(self.height):
+            prev_distr = per_row_distrs[-1]
+
+            next_distr, _ignore_new_state_distr = self._nd_roll_one_row(prev_distr, row_n)
+            # ^ ignoring new state distr for now.
+
+            per_row_distrs.append(next_distr)
 
             if DEBUG:
-                print(self._render((row, in_row_pos)), "\n")
+                print("---")
+                print(self._render_with_distr(per_row_distrs))
 
-        return in_row_pos
+        # TODO return state distrs too
+        return per_row_distrs[1:]  # returning all but input
 
     def _row_probs(self, row_n):
         """
@@ -255,54 +257,17 @@ class Board:
 
         return out_distr, out_state_distr
 
+    def _render_ball_distr(self, ball_distr):
+        # flat and norm'ed
+        flatt_RL_d = ball_distr.swapaxes(0, 1).flatten() / ball_distr.max()
+        # scale to block char max val
+        flatt_RL_d = flatt_RL_d * (len(self.block_chars) - 1) // 1
+
+        return "'" + "".join(self.block_chars[(flatt_RL_d).astype(int)]) + "'\n"
+
 
 if __name__ == "__main__":
     b = Board(4, 4, R_init_chance=0, offbalance=0.1)
+    # print(b._render_with_distr([]))
 
-    # === === === === === ===
-    # Seems working!
-    # Convert to a test case!
-    # === === === === === ===
-    in_distr = b._row_n_zeros(0)
-    in_distr[LEFT_SIDE.val, (b.width - 1) // 2] = 0.5
-    in_distr[RIGHT_SIDE.val, (b.width - 1) // 2] = 0.5
-    print(in_distr)
-    print("From row 0 ^ to row 1:")
-    out_d, _ = b._nd_roll_one_row(in_distr, 0)
-    print(out_d)
-
-    print("=" * 20)
-
-    in_distr = out_d
-    print("From row 1 ^ to row 2:")
-    out_d, _ = b._nd_roll_one_row(in_distr, 1)
-    print(out_d)
-
-    # === === === === === ===
-
-    # from collections import Counter
-
-    # stats = Counter()
-    # trans_stats = Counter()
-
-    # b = Board(30, 30, R_init_chance=0.1, offbalance=0.9)
-    # ball_pos = 0  # b.width // 2
-
-    # for i in range(1000):
-    #     prev_pos = ball_pos
-    #     ball_pos = b.roll_from_w(ball_pos)
-
-    #     stats.update([ball_pos])
-    #     trans_stats.update([(prev_pos, ball_pos)])
-
-    # # print(b._render((b.height - 1, ball_pos)))
-
-    # max_val = max(stats.values())
-    # for p in range(b.width):
-    #     print("*" * ((stats.get(p, 0) > 0) + stats.get(p, 0) * 100 // max_val))
-    # print(max_val / 100)
-
-    # max_val = max(trans_stats.values())
-    # for k, v in sorted(trans_stats.items()):
-    #     print(k, "*" * (v * 100 // max_val))
-    # print(max_val / 100)
+    per_row_distrs = b.nd_roll_from_pos((b.width - 1) // 2)
