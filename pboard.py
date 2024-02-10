@@ -13,7 +13,7 @@ import logging
 from collections import namedtuple
 import random
 
-DEBUG = 1
+DEBUG = 0
 
 
 logger = logging.Logger(f"Board logger", logging.DEBUG if DEBUG else logging.INFO)
@@ -74,13 +74,16 @@ class Board:
             for rn, row in enumerate(self.nd_states)
         ]
 
-    def _render_with_distr(self, distr) -> str:
+    def render_with_distr(self, distr) -> str:
         two_char_board = self._two_char_board()
         return "\n".join(
-            (self._render_ball_distr(distr[rn]) if rn < len(distr) else "")
-            + ("" if self.is_wide_row(rn) else "  ")
-            + "  ".join(row)
-            for rn, row in enumerate(two_char_board)
+            ("" if self.is_wide_row(rn) else "  ")
+            + (self._render_ball_distr(distr[rn]) if rn < len(distr) else "")
+            + ("" if row and self.is_wide_row(rn) else "  ")
+            + ("  ".join(row) if row else "")
+            for rn, row in enumerate(
+                two_char_board + [None]
+            )  # add None so last distr get rendered but not the extra row
         )
 
     def __repr__(self):
@@ -161,12 +164,13 @@ class Board:
     def nd_roll_from_pos(self, pos):  # returns end bin distribution and state update distribution
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
         in_distr = self._row_n_zeros(0)
-        in_distr[LEFT_SIDE.val, pos] = 1.0
+        in_distr[LEFT_SIDE.val, pos] = 0.5
+        in_distr[RIGHT_SIDE.val, pos] = 0.5
 
         per_row_distrs = [in_distr]
 
         if DEBUG:
-            print(self._render_with_distr(per_row_distrs))
+            print(self.render_with_distr(per_row_distrs))
 
         for row_n in range(self.height):
             prev_distr = per_row_distrs[-1]
@@ -178,10 +182,21 @@ class Board:
 
             if DEBUG:
                 print("---")
-                print(self._render_with_distr(per_row_distrs))
+                print(self.render_with_distr(per_row_distrs))
 
         # TODO return state distrs too
-        return per_row_distrs[1:]  # returning all but input
+        return per_row_distrs
+
+    @staticmethod
+    def _inverse_probs_with_state(probs, state):
+        """
+        Inverses array of probs depending on the state
+        t=np.array([0,0.25,0.75]*2)
+        s=np.array([0,0,0,1,1,1])
+        f(s,t)
+        >>> array([0.  , 0.25, 0.75, 1.  , 0.75, 0.25])
+        """
+        return probs + state - 2 * probs * state
 
     def _row_probs(self, row_n):
         """
@@ -201,9 +216,9 @@ class Board:
 
         # To make / support non-deterministic states weights should be lin-comb of corresponding state probs
 
-        fall_probs = self.fall_weights[s, ..., row_n, range(N)].swapaxes(0, 1)
+        fall_probs = self._inverse_probs_with_state(self.fall_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
 
-        switch_probs = self.switch_weights[s, ..., row_n, range(N)].swapaxes(0, 1)
+        switch_probs = self._inverse_probs_with_state(self.switch_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
 
         return fall_probs, switch_probs
 
@@ -217,9 +232,12 @@ class Board:
         out_distr = self._row_n_zeros(row_n + 1)  # it goes to the next row - thus +1 ?
         out_state_distr = self._row_n_zeros(row_n)
 
+        if DEBUG > 1:
+            print("sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr")
+
         # TODO 'for side' can possibly be optimized to use just one matmult instead of a loop.
         for side, sided_in_distr, fall_probs, switch_probs in zip(SIDES, in_distr, *self._row_probs(row_n)):
-            # needs board boundaries adjustment or does it not?
+            # FIXME!! needs board boundaries adjustment or does it not?
 
             #                       State 0                State 1
             #                   From 0  From 1          From 0  From 1
@@ -238,8 +256,8 @@ class Board:
             l_sided_out_distr = sided_in_distr * fall_probs
             r_sided_out_distr = sided_in_distr * (1 - fall_probs)
 
-            # DEBUG
-            # print(sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr)
+            if DEBUG > 1:
+                print(sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr)
 
             if not self.is_wide_row(row_n):
                 # [:-1] and [1:] denote shift of narrow to wide row
@@ -257,17 +275,53 @@ class Board:
 
         return out_distr, out_state_distr
 
-    def _render_ball_distr(self, ball_distr):
-        # flat and norm'ed
-        flatt_RL_d = ball_distr.swapaxes(0, 1).flatten() / ball_distr.max()
+    def _render_ball_distr(self, ball_distr, norm=True):  # norm is meh
+        # flat and optionally norm'ed
+        flat = ball_distr.swapaxes(0, 1) / (ball_distr.max() if norm else 1)
         # scale to block char max val
-        flatt_RL_d = flatt_RL_d * (len(self.block_chars) - 1) // 1
+        rescaled = (flat * (len(self.block_chars) - 1) // 1).astype(int)
 
-        return "'" + "".join(self.block_chars[(flatt_RL_d).astype(int)]) + "'\n"
+        return (
+            "  ".join("".join(self.block_chars[pair]) for pair in rescaled)
+            + (" - " + "".join(repr(flat).split()) if DEBUG else "")
+            + "\n"
+        )
 
 
+def softmax_with_temp(logits, temperature=1.0):
+    # Adjust logits according to the temperature
+    scaled_logits = logits / temperature
+    # Compute softmax values
+    exp_logits = np.exp(scaled_logits - np.max(scaled_logits))  # For numerical stability
+    return exp_logits / np.sum(exp_logits)
+
+
+def sample_probs(probs, size=1):
+    # Sample according to the adjusted probabilities
+    return np.random.choice(len(probs), size=size, p=probs)
+
+
+import time
+
+N = 10
+temp = 0
 if __name__ == "__main__":
-    b = Board(4, 4, R_init_chance=0, offbalance=0.1)
-    # print(b._render_with_distr([]))
+    b = Board(
+        20,
+        20,
+        R_init_chance=0.5,
+        offbalance=1 / 8,  # because our distr rendering can show only 8 vals
+    )
 
-    per_row_distrs = b.nd_roll_from_pos((b.width - 1) // 2)
+    pos = (b.width - 1) // 2
+    for _ in range(N):
+        per_row_distrs = b.nd_roll_from_pos(pos)
+        out_distr_flat = per_row_distrs[-1].sum(0)
+        if temp:
+            pos = sample_probs(softmax_with_temp(out_distr_flat, temp))[0]
+        else:
+            pos = out_distr_flat.argmax()
+
+        if not DEBUG:  # or it's already printed
+            print(b.render_with_distr(per_row_distrs))
+            time.sleep(1)
