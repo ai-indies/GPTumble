@@ -47,25 +47,6 @@ class Board:
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
         self.switch_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
 
-    def _render(self, ball_pos=None) -> str:
-        board_as_slash = self._one_char_board()
-        if ball_pos:
-            board_as_slash[ball_pos[0]] = (
-                board_as_slash[ball_pos[0]][: ball_pos[1] + ball_pos[0] % 2]
-                + ["*"]
-                + board_as_slash[ball_pos[0]][ball_pos[1] + ball_pos[0] % 2 :]
-            )
-        return "\n".join(
-            ("" if self.is_wide_row(rn) else " ") + " ".join(row) for rn, row in enumerate(board_as_slash)
-        ).replace(" * ", "*")
-
-    @staticmethod
-    def _state_to_slash(state):
-        return "\\" if state.name == "L" else "/"
-
-    def _one_char_board(self):
-        return [[self._state_to_slash(pos) for pos in row[: self.row_width(rn)]] for rn, row in enumerate(self.states)]
-
     _switch_render_map = {0: "\\_", 1: "_/"}
 
     def _two_char_board(self):
@@ -87,60 +68,7 @@ class Board:
         )
 
     def __repr__(self):
-        return self._render()
-
-    def roll_from_w(self, w) -> int:
-        in_row_pos = w
-        last_move = RIGHT_SIDE
-        if DEBUG:
-            print("Input:")
-            print(" " + (" |" * w + "*" + "| " * (self.width - w - 1)))  # ball over the board
-            print(self._render(), "\n")
-
-        for row in range(self.height):
-            move = self._roll_w_h(in_row_pos, row, last_move)
-
-            if self.is_wide_row(row):  # wide row
-                in_row_pos += move.val - 1
-            else:
-                in_row_pos += move.val
-
-            if DEBUG:
-                print(self._render((row, in_row_pos)), "\n")
-
-        return in_row_pos
-
-    def _roll_w_h(self, w, h, last_shift: Side) -> Side:
-        if self.is_wide_row(h):
-            if w == 0:
-                return RIGHT_SIDE
-            if w == self.width - 1:
-                return LEFT_SIDE
-
-        old_state = state = self.states[h][w]
-
-        param_state = self.params[state]
-
-        new_param_pos = param_state.get("ball_from_" + last_shift.name)
-
-        to_l_prob = new_param_pos.get("ball_to_l")[h][w]
-        to_R_prob = new_param_pos.get("to_state_R")[h][w]
-
-        side_roll = self.rng.random()
-        state_roll = self.rng.random()
-
-        new_state = state = LEFT_SIDE if state_roll > to_R_prob else RIGHT_SIDE
-
-        # print(f"- new {h}:{w} state {'<' if state == 'L' else '>'}")
-
-        self.states[h][w] = new_state
-
-        move = RIGHT_SIDE if side_roll > to_l_prob else LEFT_SIDE
-
-        if DEBUG:
-            print(f"{h}:{w} {self._state_to_slash(old_state)} => {self._state_to_slash(new_state)}, move: {move.name}")
-
-        return move
+        return self.render_with_distr([])
 
     def _init_weight(self, main_mode, off_main=0, extra_dims=tuple()):
         return np.array(
@@ -303,12 +231,13 @@ def sample_probs(probs, size=1):
 
 import time
 
+RENDER = 0.1
 N = 10
-temp = 0
+temp = 1
 if __name__ == "__main__":
     b = Board(
-        20,
-        20,
+        10,
+        10,
         R_init_chance=0.5,
         offbalance=1 / 8,  # because our distr rendering can show only 8 vals
     )
@@ -322,6 +251,7 @@ if __name__ == "__main__":
         else:
             pos = out_distr_flat.argmax()
 
-        if not DEBUG:  # or it's already printed
+        if not DEBUG and RENDER:  # or it's already printed
             print(b.render_with_distr(per_row_distrs))
-            time.sleep(1)
+            time.sleep(RENDER)
+        print(pos)
