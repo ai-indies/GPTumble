@@ -42,11 +42,8 @@ class Board:
         self.height = height
 
         self.nd_states = np.random.choice(
-            [s.val for s in SIDES], size=(self.width, self.height), p=[1 - R_init_chance, R_init_chance]
+            [s.val for s in SIDES], size=(self.height, self.width), p=[1 - R_init_chance, R_init_chance]
         )
-
-        # converting to normal list so we can store the RIGH/LEFT_SIDE tuples directly
-        self.states = [[SIDE_VAL_TO_SIDE[pos] for pos in row] for row in self.nd_states]
 
         # 2 (switch state), 2 (incoming ball side), board height, N
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
