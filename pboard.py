@@ -206,29 +206,29 @@ class Board:
         return out_distr, out_state_distr
 
     def _render_ball_distr(self, ball_distr, norm=True):  # norm is meh
-        # flat and optionally norm'ed
-        flat = ball_distr.swapaxes(0, 1) / (ball_distr.max() if norm else 1)
-        # scale to block char max val
-        rescaled = (flat * (len(self.block_chars) - 1) // 1).astype(int)
+        # flat
+        flat = ball_distr.swapaxes(0, 1)
+        # scale to block char max val and optionally norm first
+        rescaled = (flat / (ball_distr.max() if norm else 1) * (len(self.block_chars) - 1) // 1).astype(int)
 
         return (
             "  ".join("".join(self.block_chars[pair]) for pair in rescaled)
-            + (" - " + "".join(repr(flat).split()) if DEBUG else "")
+            + (" - " + "".join(repr(flat.astype(np.float16))[6:-16].split()) if DEBUG else "")
             + "\n"
         )
 
 
-def softmax_with_temp(logits, temperature=1.0):
-    # Adjust logits according to the temperature
-    scaled_logits = logits / temperature
+def sample_probs_with_temp(probs, temp=1.0):
+    if not temp:
+        return probs.argmax()
+
+    # Sample according to the adjusted probabilities
+    scaled_logits = probs / temp
     # Compute softmax values
     exp_logits = np.exp(scaled_logits - np.max(scaled_logits))  # For numerical stability
-    return exp_logits / np.sum(exp_logits)
+    softmax = exp_logits / np.sum(exp_logits)
 
-
-def sample_probs(probs, size=1):
-    # Sample according to the adjusted probabilities
-    return np.random.choice(len(probs), size=size, p=probs)
+    return np.random.choice(len(softmax), size=1, p=softmax)[0]
 
 
 import time
@@ -236,6 +236,7 @@ import time
 RENDER = 0.1
 N = 10
 temp = 1
+DEBUG = 1  # also set in the begining
 if __name__ == "__main__":
     b = Board(
         10,
@@ -247,11 +248,13 @@ if __name__ == "__main__":
     pos = (b.width - 1) // 2
     for _ in range(N):
         per_row_distrs = b.nd_roll_from_pos(pos)
+
+        # FIXME maybe? this ignores "from L / R" out bins, should it be that or should we forward this to the next roll input?
         out_distr_flat = per_row_distrs[-1].sum(0)
-        if temp:
-            pos = sample_probs(softmax_with_temp(out_distr_flat, temp))[0]
-        else:
-            pos = out_distr_flat.argmax()
+
+        pos = sample_probs_with_temp(out_distr_flat, temp)
+
+        pos = min(pos, b.row_width(0))
 
         if not DEBUG and RENDER:  # or it's already printed
             print(b.render_with_distr(per_row_distrs))
