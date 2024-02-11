@@ -11,11 +11,14 @@ import numpy as np
 from enum import Enum
 import logging
 from collections import namedtuple
-import random
 
 DEBUG = 0
 SEED = 0
 np.random.seed(SEED)
+
+RED_COLOR = "\033[31m"
+GREEN_COLOR = "\033[32m"
+RESET_COLOR = "\033[0m"
 
 
 logger = logging.Logger(f"Board logger", logging.DEBUG if DEBUG else logging.INFO)
@@ -49,7 +52,7 @@ class Board:
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
         self.switch_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
 
-    _switch_render_map = {0: "\\_", 1: "_/"}
+    _switch_render_map = {0: f"{RED_COLOR}\\_{RESET_COLOR}", 1: f"{RED_COLOR}_/{RESET_COLOR}"}
 
     def _two_char_board(self):
         return [
