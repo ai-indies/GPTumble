@@ -14,6 +14,8 @@ from collections import namedtuple
 import random
 
 DEBUG = 0
+SEED = 0
+np.random.seed(SEED)
 
 
 logger = logging.Logger(f"Board logger", logging.DEBUG if DEBUG else logging.INFO)
@@ -29,7 +31,7 @@ SIDE_VAL_TO_SIDE = {side.val: side for side in SIDES}
 
 
 class Board:
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed=SEED)
     block_chars = np.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
