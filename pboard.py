@@ -41,7 +41,7 @@ class Board:
         self.width = width
         self.height = height
 
-        self.nd_states = np.random.choice(
+        self.states = np.random.choice(
             [s.val for s in SIDES], size=(self.height, self.width), p=[1 - R_init_chance, R_init_chance]
         )
 
@@ -54,7 +54,7 @@ class Board:
     def _two_char_board(self):
         return [
             [self._switch_render_map[pos_state] for pos_state in row[: self.row_width(rn)]]
-            for rn, row in enumerate(self.nd_states)
+            for rn, row in enumerate(self.states)
         ]
 
     def render_with_distr(self, distr) -> str:
@@ -91,7 +91,7 @@ class Board:
         """returns zeros array size: 2 * row_width"""
         return np.zeros((2, self.row_width(row_n=row_n)))
 
-    def nd_roll_from_pos(self, pos):  # returns end bin distribution and state update distribution
+    def roll_from_pos(self, pos):  # returns end bin distribution and state update distribution
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
         in_distr = self._row_n_zeros(0)
         in_distr[LEFT_SIDE.val, pos] = 0.5
@@ -105,7 +105,7 @@ class Board:
         for row_n in range(self.height):
             prev_distr = per_row_distrs[-1]
 
-            next_distr, _ignore_new_state_distr = self._nd_roll_one_row(prev_distr, row_n)
+            next_distr, _ignore_new_state_distr = self._roll_one_row(prev_distr, row_n)
             # ^ ignoring new state distr for now.
 
             per_row_distrs.append(next_distr)
@@ -142,7 +142,7 @@ class Board:
         # 2 (switch state), 2 (incoming ball side), board height, N
 
         N = self.row_width(row_n)
-        s = self.nd_states[row_n, :N]
+        s = self.states[row_n, :N]
 
         # To make / support non-deterministic states weights should be lin-comb of corresponding state probs
 
@@ -152,7 +152,7 @@ class Board:
 
         return fall_probs, switch_probs
 
-    def _nd_roll_one_row(self, in_distr, row_n):
+    def _roll_one_row(self, in_distr, row_n):
         """
         in_probs - float array of size 2 (sides) * row_width
 
@@ -247,7 +247,7 @@ if __name__ == "__main__":
 
     pos = (b.width - 1) // 2
     for _ in range(N):
-        per_row_distrs = b.nd_roll_from_pos(pos)
+        per_row_distrs = b.roll_from_pos(pos)
 
         # FIXME maybe? this ignores "from L / R" out bins, should it be that or should we forward this to the next roll input?
         out_distr_flat = per_row_distrs[-1].sum(0)
