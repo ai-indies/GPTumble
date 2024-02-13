@@ -91,7 +91,9 @@ class Board:
         """returns zeros array size: 2 * row_width"""
         return np.zeros((2, self.row_width(row_n=row_n)))
 
-    def roll_from_pos(self, pos):  # returns end bin distribution and state update distribution
+    def roll_from_pos(self, pos):  # returns each row distributions (TODO: + state update distribution)
+        assert pos < b.row_width(0)
+
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
         in_distr = self._row_n_zeros(0)
         in_distr[LEFT_SIDE.val, pos] = 0.5
@@ -254,7 +256,7 @@ if __name__ == "__main__":
 
         pos = sample_probs_with_temp(out_distr_flat, temp)
 
-        pos = min(pos, b.row_width(0))
+        pos = min(pos, b.row_width(0) - 1)
 
         if not DEBUG and RENDER:  # or it's already printed
             print(b.render_with_distr(per_row_distrs))
