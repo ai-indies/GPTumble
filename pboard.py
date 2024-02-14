@@ -18,7 +18,11 @@ np.random.seed(SEED)
 
 RED_COLOR = "\033[31m"
 GREEN_COLOR = "\033[32m"
+REV_COLOR = "\033[7m"
+RED_BG = "\033[41m"
 RESET_COLOR = "\033[0m"
+
+RENDER_SPACER = "  "
 
 
 logger = logging.Logger(f"Board logger", logging.DEBUG if DEBUG else logging.INFO)
@@ -32,6 +36,12 @@ SIDES = [LEFT_SIDE, RIGHT_SIDE]
 
 SIDE_VAL_TO_SIDE = {side.val: side for side in SIDES}
 
+# Pseudo states to mark up changes with colors
+TO_ZERO_FROM_ONE = -2
+TO_ONE_FROM_ZERO = -1
+
+PSEUDO_TO_TRUE_STATE = {TO_ZERO_FROM_ONE: 0, TO_ONE_FROM_ZERO: 1, 0: 0, 1: 1}
+
 
 class Board:
     rng = np.random.default_rng(seed=SEED)
@@ -41,15 +51,22 @@ class Board:
         self.width = width
         self.height = height
 
-        self.states = np.random.choice(
+        self.states = np.random.choice(  # TODO self.rng numpy 0,1 random?
             [s.val for s in SIDES], size=(self.height, self.width), p=[1 - R_init_chance, R_init_chance]
         )
 
-        # 2 (switch state), 2 (incoming ball side), board height, N
+        # 2 (switch state), 2 (incoming ball side), board h, w
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
+
+        # 2 (switch state), 2 (incoming ball side), board h, w
         self.switch_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
 
-    _switch_render_map = {0: f"{RED_COLOR}\\_{RESET_COLOR}", 1: f"{RED_COLOR}_/{RESET_COLOR}"}
+    _switch_render_map = {
+        0: f"\\_",
+        1: f"_/",
+        TO_ZERO_FROM_ONE: f"{RED_BG}\\_{RESET_COLOR}",
+        TO_ONE_FROM_ZERO: f"{RED_BG}_/{RESET_COLOR}",
+    }
 
     def _two_char_board(self):
         return [
@@ -58,27 +75,42 @@ class Board:
         ]
 
     def render_with_distr(self, distr) -> str:
-        two_char_board = self._two_char_board()
-        return "\n".join(
-            ("" if self.is_wide_row(rn) else "  ")
-            + (self._render_ball_distr(distr[rn]) if rn < len(distr) else "")
-            + ("" if row and self.is_wide_row(rn) else "  ")
-            + ("  ".join(row) if row else "")
-            for rn, row in enumerate(
-                two_char_board + [None]
-            )  # add None so last distr get rendered but not the extra row
-        )
+        res = []
+
+        # zip shortest and `[None]` is added for if the distr after the last row need to be rendered
+        for rn, (row_distr, two_char_row) in enumerate(zip(distr, self._two_char_board() + [None])):
+            if row_distr is None:
+                continue  # so we print only needed rows
+
+            is_wide = self.is_wide_row(rn)
+
+            if row_distr.any():
+                r_row = ""
+                if not is_wide:
+                    r_row += RENDER_SPACER
+                r_row += self._render_ball_distr(row_distr)
+                res.append(r_row)
+
+            if two_char_row:  # or None for the one after last.
+                r_row = ""
+                if not is_wide:
+                    r_row += RENDER_SPACER
+                r_row += RENDER_SPACER.join(two_char_row or "")
+                res.append(r_row)
+
+        return "\n".join(res)
 
     def __repr__(self):
-        return self.render_with_distr([])
+        # FIXME OMG :FP:
+        return self.render_with_distr(np.zeros(self.height))
 
     def _init_weight(self, main_mode, off_main=0, extra_dims=tuple()):
-        return np.array(
-            ## Deterministic for now
-            # self.rng.random(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main),
-            np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main),
-            # dtype=np.float16, # can be used for less verbose debug
-        )
+        # very straight forward (for now?)
+        # return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+        # Could be something like:
+        return self.rng.random(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+
+        # np.array(..., dtype=np.float16) # can be used for less verbose debug
 
     @staticmethod
     def is_wide_row(row_n) -> bool:
@@ -91,7 +123,7 @@ class Board:
         """returns zeros array size: 2 * row_width"""
         return np.zeros((2, self.row_width(row_n=row_n)))
 
-    def roll_from_pos(self, pos):  # returns each row distributions (TODO: + state update distribution)
+    def roll_from_pos(self, pos):  # returns each row distributions
         assert pos < b.row_width(0)
 
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
@@ -102,21 +134,20 @@ class Board:
         per_row_distrs = [in_distr]
 
         if DEBUG:
+            # FIXME should be 'render_row_with_distr'
             print(self.render_with_distr(per_row_distrs))
 
         for row_n in range(self.height):
             prev_distr = per_row_distrs[-1]
 
-            next_distr, _ignore_new_state_distr = self._roll_one_row(prev_distr, row_n)
-            # ^ ignoring new state distr for now.
+            next_distr = self._roll_one_row(prev_distr, row_n)
+
+            if DEBUG:
+                # FIXME should be 'render_row_with_distr'
+                print(self.render_with_distr([None] * len(per_row_distrs) + [next_distr]))
 
             per_row_distrs.append(next_distr)
 
-            if DEBUG:
-                print("---")
-                print(self.render_with_distr(per_row_distrs))
-
-        # TODO return state distrs too
         return per_row_distrs
 
     @staticmethod
@@ -136,7 +167,6 @@ class Board:
 
         returns:
         fall_probs: float array of size 2 (incoming ball side) * row_width
-        switch_probs: float array of size 2 (incoming ball sides) * row_width
         """
 
         # Considering N (row width) switches in states (0s and 1s): s = [s1, ..., sn]
@@ -150,9 +180,7 @@ class Board:
 
         fall_probs = self._inverse_probs_with_state(self.fall_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
 
-        switch_probs = self._inverse_probs_with_state(self.switch_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
-
-        return fall_probs, switch_probs
+        return fall_probs
 
     def _roll_one_row(self, in_distr, row_n):
         """
@@ -161,34 +189,60 @@ class Board:
         returns: float array of size 2 (sides) * next_row_w
         """
 
-        out_distr = self._row_n_zeros(row_n + 1)  # it goes to the next row - thus +1 ?
-        out_state_distr = self._row_n_zeros(row_n)
+        out_distr = self._row_n_zeros(row_n + 1)  # it goes to the next row - thus +1
 
-        if DEBUG > 1:
+        if DEBUG > 2:
             print("sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr")
 
-        # TODO 'for side' can possibly be optimized to use just one matmult instead of a loop.
-        for side, sided_in_distr, fall_probs, switch_probs in zip(SIDES, in_distr, *self._row_probs(row_n)):
-            # FIXME!! needs board boundaries adjustment or does it not?
-
-            #                       State 0                State 1
-            #                   From 0  From 1          From 0  From 1
-            # Falls left        p00     p01             p10     p11
-            # Falls right       1-p00   1-p01           1-p10   1-p11
+        # TODO this for loop can possibly be optimized to do all in one pass.
+        for side, sided_in_distr, fall_probs in zip(SIDES, in_distr, self._row_probs(row_n)):
+            #                          State 0 (left)        State 1 (right)
+            #                          From 0  From 1        From 0  From 1
+            # Falls to 0 (left)        p00     p01           p10     p11
+            # Falls to 1 (right)       1-p00   1-p01         1-p10   1-p11
             #
-            # "Normal" switch:  p00 ~= 0, p01 ~= 0, p10 ~= 1, p11 ~= 1
-            # "Cross" switch:   p00 ~= 0, p01 ~= 1, p10 ~= 0, p11 ~= 1 (essentially no state)
-            # "Bounce" switch:  p00 ~= 1, p01 ~= 0, p10 ~= 0, p11 ~= 1 (essentially no state)
+            # "Normal" switch `=1-state` (no in-direction dependency):
+            #   Falls to 0 (left)      0      0              1      1
+            #   Falls to 1 (right)     1      1              0      0
+            # "Cross" switch `=1-from` (no state dependency):
+            #   Falls to 0 (left)      0      1              0      1
+            #   Falls to 1 (right)     1      0              1      0
+            # "Bounce back" switch `=from` (no state dependency):
+            #   Falls to 0 (left)      1      0              1      0
+            #   Falls to 1 (right)     0      1              0      1
+            # "Always one side" (left) `=0` (no state or direction dependency)
+            #   Falls to 0 (left)      1      1              1      1
+            #   Falls to 1 (right)     0      0              0      0
             #
-            # Not sure about this - see MAJOR TODO on correlation between falls and switches.
-            # Switches to 0     s00     s01             s10     s11
-            # Switches to 1
+            # Could be modeled differently:
+            #
+            #                          State 0 (left)        State 1 (right)
+            #                          From 0  From 1        From 0  From 1
+            # Falls opposite of state  p00     p01           p10     p11
+            # Falls same side as state 1-p00   1-p01         1-p10   1-p11
+            #
+            # "Normal" switch (no in-direction dependency):
+            #   Falls state opposite   1      1              1      1
+            #   Falls state side       0      0              0      0
+            # "Cross" switch (no state dependency):
+            #   Falls state opposite   1      0              0      1
+            #   Falls state side       0      1              1      0
+            # "Bounce back" switch (no state dependency):
+            #   Falls state opposite   0      1              1      0
+            #   Falls state side       1      0              0      1
+            # "Always one side" (left) `=0` (no state or direction dependency)
+            #   Falls state opposite   0      0              1      1
+            #   Falls state side       1      1              0      0
+            #
+            # This one is nicer to use, because "normal" switch is easily modeled with just 4 weights of 0.
+            #
+            # ^ Both of these sets of 4 should constitute a basis of all possible switches as linear combos.
             #
 
             l_sided_out_distr = sided_in_distr * fall_probs
             r_sided_out_distr = sided_in_distr * (1 - fall_probs)
 
-            if DEBUG > 1:
+            if DEBUG > 2:
                 print(sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr)
 
             if not self.is_wide_row(row_n):
@@ -198,26 +252,56 @@ class Board:
 
             else:
                 # [:-1] and [1:] denote shift of wide to narrow row
+                # TODO FIX MAYBE? This is where balls fall off the board
                 out_distr[1] += l_sided_out_distr[1:]
                 out_distr[0] += r_sided_out_distr[:-1]
 
-            # # MAJOR TODO - new state should be most of the time the same as the out_distr!
-            # sided_out_state = sided_in_distr * switch_probs
-            # out_state_distr += sided_out_state
-
-        return out_distr, out_state_distr
+        return out_distr
 
     def _render_ball_distr(self, ball_distr, norm=True):  # norm is meh
-        # flat
         flat = ball_distr.swapaxes(0, 1)
-        # scale to block char max val and optionally norm first
-        rescaled = (flat / (ball_distr.max() if norm else 1) * (len(self.block_chars) - 1) // 1).astype(int)
+        # optionally norm first
+        rescaled = flat / (ball_distr.max() if norm else 1)
+        # scale to block char max val
+        rescaled *= (len(self.block_chars) - 1) // 1
+        rescaled = rescaled.astype(int)
 
-        return (
-            "  ".join("".join(self.block_chars[pair]) for pair in rescaled)
-            + (" - " + "".join(repr(flat.astype(np.float16))[6:-16].split()) if DEBUG else "")
-            + "\n"
+        return RENDER_SPACER.join("".join(self.block_chars[pair]) for pair in rescaled) + (
+            " - " + "".join(repr(flat.astype(np.float16))[6:-16].split()) if DEBUG else ""
         )
+
+    def update_states(self, end_pos, ball_distrs, temp):
+        pos = end_pos
+        for rn, distr in reversed(list(enumerate(ball_distrs, -1))):
+            if rn < 0:
+                break
+
+            from_l_r_prop = distr[..., pos]
+
+            # 0 means left, 1 means right.
+            from_which_side = from_l_r_prop.argmax()  # TODO use resampling temp
+
+            new_pos = pos + from_which_side
+
+            # TODO probably need some of that
+            if not self.is_wide_row(rn):  # FIXME boundary bug - wraps around from left to right
+                new_pos -= 1
+
+            # Basically self.states[rn][new_pos] = 1 - self.states[rn][new_pos]
+            if self.states[rn][new_pos] == 1:
+                self.states[rn][new_pos] = TO_ZERO_FROM_ONE
+
+            elif self.states[rn][new_pos] == 0:
+                self.states[rn][new_pos] = TO_ONE_FROM_ZERO
+
+            if DEBUG:
+                print(f"rn {rn}, pos {pos}, probs {from_l_r_prop}, argmax {from_which_side}, new {new_pos}")
+                print(self)
+            pos = new_pos
+
+    def normalize_states(self):
+        self.states[self.states == TO_ZERO_FROM_ONE] = 0
+        self.states[self.states == TO_ONE_FROM_ZERO] = 1
 
 
 def sample_probs_with_temp(probs, temp=1.0):
@@ -249,16 +333,26 @@ if __name__ == "__main__":
 
     pos = (b.width - 1) // 2
     for _ in range(N):
+        if DEBUG:
+            print("rolling from", pos)
         per_row_distrs = b.roll_from_pos(pos)
 
         # FIXME maybe? this ignores "from L / R" out bins, should it be that or should we forward this to the next roll input?
         out_distr_flat = per_row_distrs[-1].sum(0)
-
         pos = sample_probs_with_temp(out_distr_flat, temp)
-
         pos = min(pos, b.row_width(0) - 1)
 
-        if not DEBUG and RENDER:  # or it's already printed
+        # if not DEBUG and RENDER:  # or it's already printed
+        #     print(b.render_with_distr(per_row_distrs))
+        #     time.sleep(RENDER)
+        if DEBUG:
+            print("^ chose", pos, "from", out_distr_flat)
+        else:
+            print("^ chose", pos)
+
+        b.update_states(pos, per_row_distrs, temp)
+        if not DEBUG and RENDER:  # with updates now
             print(b.render_with_distr(per_row_distrs))
             time.sleep(RENDER)
-        print(pos)
+
+        b.normalize_states()
