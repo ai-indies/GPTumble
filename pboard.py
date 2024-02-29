@@ -7,14 +7,44 @@ row
 
 Transition from odd row is same/+1, from even row -1/same
 """
-import numpy as np
+
+try:
+    import jax
+
+    JAX = True
+    import jax.numpy as np
+except:
+    JAX = False
+    import numpy as np
+
 from enum import Enum
 import logging
 from collections import namedtuple
 
-DEBUG = 0
+DEBUG = None
 SEED = 0
-np.random.seed(SEED)
+if JAX:
+    import jax.random
+
+    PRNGKEY = jax.random.PRNGKey(SEED)
+
+    def PRNG(method, *a, **kw):
+        global PRNGKEY
+        PRNGKEY, subkey = jax.random.split(PRNGKEY)
+        return getattr(jax.random, method)(subkey, *a, **kw)
+
+else:
+    np.random.seed(SEED)
+    RNG = np.random.default_rng(seed=SEED)
+
+    def PRNG(method, *a, **kw):
+        global RNG
+        if method == "uniform":
+            method = "random"
+        return getattr(RNG, method)(*a, **kw)
+
+
+import numpy as raw_numpy
 
 RED_COLOR = "\033[31m"
 GREEN_COLOR = "\033[32m"
@@ -44,15 +74,17 @@ PSEUDO_TO_TRUE_STATE = {TO_ZERO_FROM_ONE: 0, TO_ONE_FROM_ZERO: 1, 0: 0, 1: 1}
 
 
 class Board:
-    rng = np.random.default_rng(seed=SEED)
-    block_chars = np.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
+    block_chars = raw_numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
         self.width = width
         self.height = height
 
-        self.states = np.random.choice(  # TODO self.rng numpy 0,1 random?
-            [s.val for s in SIDES], size=(self.height, self.width), p=[1 - R_init_chance, R_init_chance]
+        self.states = PRNG(
+            "choice",
+            np.array([s.val for s in SIDES]),
+            (self.height, self.width),
+            p=np.array([1 - R_init_chance, R_init_chance]),
         )
 
         # 2 (switch state), 2 (incoming ball side), board h, w
@@ -64,13 +96,13 @@ class Board:
     _switch_render_map = {
         0: f"\\_",
         1: f"_/",
-        TO_ZERO_FROM_ONE: f"{RED_BG}\\_{RESET_COLOR}",
-        TO_ONE_FROM_ZERO: f"{RED_BG}_/{RESET_COLOR}",
+        TO_ZERO_FROM_ONE: f"{RED_BG}_/{RESET_COLOR}",
+        TO_ONE_FROM_ZERO: f"{RED_BG}\\_{RESET_COLOR}",
     }
 
     def _two_char_board(self):
         return [
-            [self._switch_render_map[pos_state] for pos_state in row[: self.row_width(rn)]]
+            [self._switch_render_map[int(pos_state)] for pos_state in row[: self.row_width(rn)]]
             for rn, row in enumerate(self.states)
         ]
 
@@ -105,10 +137,10 @@ class Board:
         return self.render_with_distr(np.zeros(self.height))
 
     def _init_weight(self, main_mode, off_main=0, extra_dims=tuple()):
-        # very straight forward (for now?)
+        # No random - all the same:
         # return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
-        # Could be something like:
-        return self.rng.random(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+
+        return PRNG("uniform", extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
         # np.array(..., dtype=np.float16) # can be used for less verbose debug
 
@@ -128,8 +160,12 @@ class Board:
 
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
         in_distr = self._row_n_zeros(0)
-        in_distr[LEFT_SIDE.val, pos] = 0.5
-        in_distr[RIGHT_SIDE.val, pos] = 0.5
+        if JAX:
+            in_distr = in_distr.at[LEFT_SIDE.val, pos].set(0.5)
+            in_distr = in_distr.at[RIGHT_SIDE.val, pos].set(0.5)
+        else:
+            in_distr[LEFT_SIDE.val, pos] = 0.5
+            in_distr[RIGHT_SIDE.val, pos] = 0.5
 
         per_row_distrs = [in_distr]
 
@@ -171,14 +207,19 @@ class Board:
 
         # Considering N (row width) switches in states (0s and 1s): s = [s1, ..., sn]
         # and the weight matrix with dimensions:
-        # 2 (switch state), 2 (incoming ball side), board height, N
+        # 2 (switch state), 2 (incoming ball side), row, positions
 
         N = self.row_width(row_n)
         s = self.states[row_n, :N]
 
         # To make / support non-deterministic states weights should be lin-comb of corresponding state probs
 
-        fall_probs = self._inverse_probs_with_state(self.fall_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
+        if JAX:
+            fall_probs = self._inverse_probs_with_state(
+                self.fall_weights[s, ..., row_n, np.array(range(N))].swapaxes(0, 1), s
+            )
+        else:
+            fall_probs = self._inverse_probs_with_state(self.fall_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
 
         return fall_probs
 
@@ -191,7 +232,7 @@ class Board:
 
         out_distr = self._row_n_zeros(row_n + 1)  # it goes to the next row - thus +1
 
-        if DEBUG > 2:
+        if DEBUG and DEBUG > 2:
             print("sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr")
 
         # TODO this for loop can possibly be optimized to do all in one pass.
@@ -242,19 +283,28 @@ class Board:
             l_sided_out_distr = sided_in_distr * fall_probs
             r_sided_out_distr = sided_in_distr * (1 - fall_probs)
 
-            if DEBUG > 2:
+            if DEBUG and DEBUG > 2:
                 print(sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr)
 
             if not self.is_wide_row(row_n):
                 # [:-1] and [1:] denote shift of narrow to wide row
-                out_distr[1][:-1] += l_sided_out_distr
-                out_distr[0][1:] += r_sided_out_distr
+                if JAX:
+                    out_distr = out_distr.at[1, :-1].add(l_sided_out_distr)
+                    out_distr = out_distr.at[0, 1:].add(r_sided_out_distr)
+                else:
+                    out_distr[1][:-1] += l_sided_out_distr
+                    out_distr[0][1:] += r_sided_out_distr
 
             else:
                 # [:-1] and [1:] denote shift of wide to narrow row
-                # TODO FIX MAYBE? This is where balls fall off the board
-                out_distr[1] += l_sided_out_distr[1:]
-                out_distr[0] += r_sided_out_distr[:-1]
+                # TODO FIX MAYBE? This is where balls fall off the board?
+                # TODO FIX MAYBE - ball falling off the board behavior is inconsistent between np and jnp
+                if JAX:
+                    out_distr = out_distr.at[1].add(l_sided_out_distr[1:])
+                    out_distr = out_distr.at[0].add(r_sided_out_distr[:-1])
+                else:
+                    out_distr[1] += l_sided_out_distr[1:]
+                    out_distr[0] += r_sided_out_distr[:-1]
 
         return out_distr
 
@@ -289,10 +339,16 @@ class Board:
 
             # Basically self.states[rn][new_pos] = 1 - self.states[rn][new_pos]
             if self.states[rn][new_pos] == 1:
-                self.states[rn][new_pos] = TO_ZERO_FROM_ONE
+                if JAX:
+                    self.states = self.states.at[rn, new_pos].set(TO_ZERO_FROM_ONE)
+                else:
+                    self.states[rn][new_pos] = TO_ZERO_FROM_ONE
 
             elif self.states[rn][new_pos] == 0:
-                self.states[rn][new_pos] = TO_ONE_FROM_ZERO
+                if JAX:
+                    self.states = self.states.at[rn, new_pos].set(TO_ONE_FROM_ZERO)
+                else:
+                    self.states[rn][new_pos] = TO_ONE_FROM_ZERO
 
             if DEBUG:
                 print(f"rn {rn}, pos {pos}, probs {from_l_r_prop}, argmax {from_which_side}, new {new_pos}")
@@ -300,8 +356,12 @@ class Board:
             pos = new_pos
 
     def normalize_states(self):
-        self.states[self.states == TO_ZERO_FROM_ONE] = 0
-        self.states[self.states == TO_ONE_FROM_ZERO] = 1
+        if JAX:
+            self.states = self.states.at[self.states == TO_ZERO_FROM_ONE].set(0)
+            self.states = self.states.at[self.states == TO_ONE_FROM_ZERO].set(0)
+        else:
+            self.states[self.states == TO_ZERO_FROM_ONE] = 0
+            self.states[self.states == TO_ONE_FROM_ZERO] = 1
 
 
 def sample_probs_with_temp(probs, temp=1.0):
@@ -314,21 +374,21 @@ def sample_probs_with_temp(probs, temp=1.0):
     exp_logits = np.exp(scaled_logits - np.max(scaled_logits))  # For numerical stability
     softmax = exp_logits / np.sum(exp_logits)
 
-    return np.random.choice(len(softmax), size=1, p=softmax)[0]
+    return PRNG("choice", len(softmax), [1], p=softmax)[0]
 
 
 import time
 
 RENDER = 0.1
-N = 10
-temp = 1
-DEBUG = 1  # also set in the begining
+N = 5
+temp = 0
+DEBUG = 0  # also set in the begining
 if __name__ == "__main__":
     b = Board(
-        10,
-        10,
-        R_init_chance=0.5,
-        offbalance=1 / 8,  # because our distr rendering can show only 8 vals
+        6,
+        5,
+        R_init_chance=0,
+        offbalance=0,  # because our distr rendering can show only 8 vals
     )
 
     pos = (b.width - 1) // 2
@@ -347,8 +407,8 @@ if __name__ == "__main__":
         #     time.sleep(RENDER)
         if DEBUG:
             print("^ chose", pos, "from", out_distr_flat)
-        else:
-            print("^ chose", pos)
+        elif DEBUG is not None:
+            print("chose:", pos)
 
         b.update_states(pos, per_row_distrs, temp)
         if not DEBUG and RENDER:  # with updates now
