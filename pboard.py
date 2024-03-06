@@ -358,7 +358,7 @@ class Board:
     def normalize_states(self):
         if JAX:
             self.states = self.states.at[self.states == TO_ZERO_FROM_ONE].set(0)
-            self.states = self.states.at[self.states == TO_ONE_FROM_ZERO].set(0)
+            self.states = self.states.at[self.states == TO_ONE_FROM_ZERO].set(1)
         else:
             self.states[self.states == TO_ZERO_FROM_ONE] = 0
             self.states[self.states == TO_ONE_FROM_ZERO] = 1
