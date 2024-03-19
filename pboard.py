@@ -31,14 +31,6 @@ import numpy
 numpy.random.seed(SEED)
 RNG = numpy.random.default_rng(seed=SEED)
 
-
-def PRNG(method, *a, **kw):
-    if DEBUG:
-        print("random", method, a, kw)
-
-    return getattr(RNG, method)(*a, **kw)
-
-
 RED_COLOR = "\033[31m"
 GREEN_COLOR = "\033[32m"
 REV_COLOR = "\033[7m"
@@ -74,8 +66,7 @@ class Board:
         self.width = width
         self.height = height
 
-        self.states = PRNG(
-            "choice",
+        self.states = RNG.choice(
             np.array([s.val for s in SIDES]),
             (self.height, self.width),
             p=np.array([1 - R_init_chance, R_init_chance]),
@@ -137,7 +128,7 @@ class Board:
         if FIXED_WEIGTHS:
             return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
-        return PRNG("random", extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+        return RNG.random(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
         # np.array(..., dtype=np.float16) # can be used for less verbose debug
 
@@ -369,9 +360,11 @@ def sample_probs_with_temp(probs, temp=1.0):
     scaled_logits = probs / temp
     # Compute softmax values
     exp_logits = np.exp(scaled_logits - np.max(scaled_logits))  # For numerical stability
-    softmax = exp_logits / np.sum(exp_logits)
 
-    return PRNG("choice", len(softmax), [1], p=softmax)[0]
+    softmax = numpy.array(exp_logits).astype("float64")
+    softmax /= softmax.sum()  # stupid floating point doesn't normalize from the first time
+
+    return RNG.choice(len(softmax), 1, p=softmax)
 
 
 import time
