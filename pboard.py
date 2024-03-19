@@ -21,6 +21,8 @@ from enum import Enum
 import logging
 from collections import namedtuple
 
+FIXED_WEIGTHS = True
+
 DEBUG = None
 SEED = 0
 
@@ -68,6 +70,7 @@ class Board:
     block_chars = numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
+        assert height / 2 == height // 2, "board height should be even number"
         self.width = width
         self.height = height
 
@@ -131,8 +134,8 @@ class Board:
         return self.render_with_distr(np.zeros(self.height))
 
     def _init_weight(self, main_mode, off_main=0, extra_dims=tuple()):
-        # No random - all the same:
-        # return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+        if FIXED_WEIGTHS:
+            return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
         return PRNG("random", extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
@@ -396,12 +399,9 @@ if __name__ == "__main__":
         pos = sample_probs_with_temp(out_distr_flat, temp)
         pos = min(pos, b.row_width(0) - 1)
 
-        # if not DEBUG and RENDER:  # or it's already printed
-        #     print(b.render_with_distr(per_row_distrs))
-        #     time.sleep(RENDER)
-        if DEBUG:
-            print("^ chose", pos, "from", out_distr_flat)
-        elif DEBUG is not None:
+        if DEBUG is not None:
+            print("chose", pos, "from", out_distr_flat)
+        else:
             print("chose:", pos)
 
         b.update_states(pos, per_row_distrs, temp)
