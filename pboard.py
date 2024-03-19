@@ -305,7 +305,7 @@ class Board:
         rescaled = rescaled.astype(int)
 
         return RENDER_SPACER.join("".join(self.block_chars[pair]) for pair in rescaled) + (
-            " - " + "".join(repr(flat.astype(np.float16))[6:-16].split()) if DEBUG else ""
+            " - " + rarr(flat.astype(np.float16)) if DEBUG else ""
         )
 
     def update_states(self, end_pos, ball_distrs, temp):
@@ -341,7 +341,7 @@ class Board:
                     self.states[rn][new_pos] = TO_ONE_FROM_ZERO
 
             if DEBUG:
-                print(f"rn {rn}, pos {pos}, probs {from_l_r_prop}, argmax {from_which_side}, new {new_pos}")
+                print(f"rn {rn}, pos {pos}, probs {rarr(from_l_r_prop)}, argmax {from_which_side}, new {new_pos}")
                 print(self)
             pos = new_pos
 
@@ -367,6 +367,10 @@ def sample_probs_with_temp(probs, temp=1.0):
     softmax /= softmax.sum()  # stupid floating point doesn't normalize from the first time
 
     return RNG.choice(len(softmax), 1, p=softmax)
+
+
+def rarr(arr):
+    return " ".join(filter(None, str(arr).split()))
 
 
 import time
@@ -395,7 +399,7 @@ if __name__ == "__main__":
         pos = min(pos, b.row_width(0) - 1)
 
         if DEBUG is not None:
-            print("chose", pos, "from", out_distr_flat)
+            print("chose", pos, "from", rarr(out_distr_flat))
         else:
             print("chose:", pos)
 
