@@ -23,28 +23,19 @@ from collections import namedtuple
 
 DEBUG = None
 SEED = 0
-if JAX:
-    import jax.random
 
-    PRNGKEY = jax.random.PRNGKey(SEED)
+import numpy
 
-    def PRNG(method, *a, **kw):
-        global PRNGKEY
-        PRNGKEY, subkey = jax.random.split(PRNGKEY)
-        return getattr(jax.random, method)(subkey, *a, **kw)
-
-else:
-    np.random.seed(SEED)
-    RNG = np.random.default_rng(seed=SEED)
-
-    def PRNG(method, *a, **kw):
-        global RNG
-        if method == "uniform":
-            method = "random"
-        return getattr(RNG, method)(*a, **kw)
+numpy.random.seed(SEED)
+RNG = numpy.random.default_rng(seed=SEED)
 
 
-import numpy as raw_numpy
+def PRNG(method, *a, **kw):
+    if DEBUG:
+        print("random", method, a, kw)
+
+    return getattr(RNG, method)(*a, **kw)
+
 
 RED_COLOR = "\033[31m"
 GREEN_COLOR = "\033[32m"
@@ -74,7 +65,7 @@ PSEUDO_TO_TRUE_STATE = {TO_ZERO_FROM_ONE: 0, TO_ONE_FROM_ZERO: 1, 0: 0, 1: 1}
 
 
 class Board:
-    block_chars = raw_numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
+    block_chars = numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
         self.width = width
@@ -86,6 +77,9 @@ class Board:
             (self.height, self.width),
             p=np.array([1 - R_init_chance, R_init_chance]),
         )
+
+        if JAX:
+            self.states = np.array(self.states)
 
         # 2 (switch state), 2 (incoming ball side), board h, w
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
@@ -140,7 +134,7 @@ class Board:
         # No random - all the same:
         # return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
-        return PRNG("uniform", extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+        return PRNG("random", extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
         # np.array(..., dtype=np.float16) # can be used for less verbose debug
 
