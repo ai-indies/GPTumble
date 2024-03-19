@@ -322,8 +322,10 @@ class Board:
             new_pos = pos + from_which_side
 
             # TODO probably need some of that
-            if not self.is_wide_row(rn):  # FIXME boundary bug - wraps around from left to right
+            if not self.is_wide_row(rn):
                 new_pos -= 1
+
+            new_pos = max(new_pos, 0)
 
             # Basically self.states[rn][new_pos] = 1 - self.states[rn][new_pos]
             if self.states[rn][new_pos] == 1:
