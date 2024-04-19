@@ -24,12 +24,15 @@ from collections import namedtuple
 FIXED_WEIGTHS = True
 
 DEBUG = None
+RENDER = False
 SEED = 0
 
-import numpy
+import numpy as raw_numpy
 
-numpy.random.seed(SEED)
-RNG = numpy.random.default_rng(seed=SEED)
+raw_numpy.set_printoptions(5)
+
+raw_numpy.random.seed(SEED)
+RNG = raw_numpy.random.default_rng(seed=SEED)
 
 RED_COLOR = "\033[31m"
 GREEN_COLOR = "\033[32m"
@@ -59,7 +62,7 @@ PSEUDO_TO_TRUE_STATE = {TO_ZERO_FROM_ONE: 0, TO_ONE_FROM_ZERO: 1, 0: 0, 1: 1}
 
 
 class Board:
-    block_chars = numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
+    block_chars = raw_numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
         assert height / 2 == height // 2, "board height should be even number"
@@ -73,7 +76,7 @@ class Board:
         )
 
         if JAX:
-            self.states = np.array(self.states)
+            self.states = np.array(self.states, dtype=int)
 
         # 2 (switch state), 2 (incoming ball side), board h, w
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
@@ -358,13 +361,19 @@ def sample_probs_with_temp(probs, temp=1.0):
     if not temp:
         return probs.argmax()
 
+    # We wanna sample only "reachable from input bins"
+    # so we use mask for all probs that are === 0
+    # so it's non-standard "sample with temp"
+    mask = raw_numpy.array(probs != 0.0)
+
     # Sample according to the adjusted probabilities
     scaled_logits = probs / temp
     # Compute softmax values
     exp_logits = np.exp(scaled_logits - np.max(scaled_logits))  # For numerical stability
 
-    softmax = numpy.array(exp_logits).astype("float64")
-    softmax /= softmax.sum()  # stupid floating point doesn't normalize from the first time
+    softmax = raw_numpy.array(exp_logits).astype("float64")
+    softmax *= mask
+    softmax /= softmax.sum()
 
     return RNG.choice(len(softmax), 1, p=softmax)
 
@@ -375,17 +384,21 @@ def rarr(arr):
 
 import time
 
-RENDER = 0.1
-N = 5
-temp = 0
-DEBUG = 0  # also set in the begining
+RENDER = 0#.001
+N = 100
+temp = 0  # .1
+# DEBUG = 0  # also set in the begining
 if __name__ == "__main__":
+    history = []
+
     b = Board(
-        6,
-        5,
-        R_init_chance=0,
-        offbalance=0,  # because our distr rendering can show only 8 vals
+        15,
+        28,
+        R_init_chance=0.5,
+        offbalance=1 / 8,  # because our distr rendering can show only 8 vals - this better be >=1/8
     )
+
+    # print(b)
 
     pos = (b.width - 1) // 2
     for _ in range(N):
@@ -398,14 +411,26 @@ if __name__ == "__main__":
         pos = sample_probs_with_temp(out_distr_flat, temp)
         pos = min(pos, b.row_width(0) - 1)
 
+        b.update_states(pos, per_row_distrs, temp)
+        if not DEBUG and RENDER:  # with updates now
+            print(b.render_with_distr(per_row_distrs))
+
         if DEBUG is not None:
             print("chose", pos, "from", rarr(out_distr_flat))
         else:
             print("chose:", pos)
 
-        b.update_states(pos, per_row_distrs, temp)
-        if not DEBUG and RENDER:  # with updates now
-            print(b.render_with_distr(per_row_distrs))
+        if not DEBUG and RENDER:
             time.sleep(RENDER)
 
         b.normalize_states()
+
+        # history.append(int(pos[0]))  # int - to unwrap from jax
+
+    # # print(history)
+    # from collections import Counter
+
+    # for _ in Counter(zip(history, history[1:])).most_common():
+    #     print(_)
+
+    print('JAX', JAX)
