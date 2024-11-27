@@ -8,14 +8,28 @@ row
 Transition from odd row is same/+1, from even row -1/same
 """
 
-try:
-    import jax
-
-    JAX = True
-    import jax.numpy as np
-except:
-    JAX = False
+def get_np_module(use_jax=True):
+    """Return the appropriate numpy module based on the use_jax flag."""
+    if use_jax:
+        try:
+            import jax.numpy as jnp
+            return jnp
+        except ImportError:
+            raise ImportError("JAX is required but not installed.")
     import numpy as np
+    return np
+
+try:
+    import jax.numpy as jnp
+    import jax.random as jrandom
+    np = get_np_module(use_jax=True)
+    JAX = True
+    JAX_KEY = jrandom.PRNGKey(SEED)
+except ImportError:
+    np = get_np_module(use_jax=False)
+    jnp = False
+    JAX = False
+    JAX_KEY = None
 
 from enum import Enum
 import logging
@@ -31,8 +45,12 @@ import numpy as raw_numpy
 
 raw_numpy.set_printoptions(5)
 
-raw_numpy.random.seed(SEED)
-RNG = raw_numpy.random.default_rng(seed=SEED)
+def initialize_random_state(seed=SEED):
+    """Initialize the random state for reproducibility."""
+    raw_numpy.random.seed(seed)
+    return raw_numpy.random.default_rng(seed=seed)
+
+RNG = initialize_random_state(SEED)
 
 RED_COLOR = "\033[31m"
 GREEN_COLOR = "\033[32m"
@@ -64,25 +82,39 @@ PSEUDO_TO_TRUE_STATE = {TO_ZERO_FROM_ONE: 0, TO_ONE_FROM_ZERO: 1, 0: 0, 1: 1}
 class Board:
     block_chars = raw_numpy.array([" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"])
 
-    def __init__(self, width, height, R_init_chance=False, offbalance=False) -> None:
+    def __init__(self, width, height, R_init_chance=False, offbalance=False, np_impl=None) -> None:
         assert height / 2 == height // 2, "board height should be even number"
         self.width = width
         self.height = height
+        self.np = np_impl if np_impl is not None else np
 
-        self.states = RNG.choice(
-            np.array([s.val for s in SIDES]),
-            (self.height, self.width),
-            p=np.array([1 - R_init_chance, R_init_chance]),
-        )
+        if self.np is jnp:
+            global JAX_KEY
+            JAX_KEY, subkey = jrandom.split(JAX_KEY)
+            self.states = jrandom.choice(
+                subkey,
+                self.np.array([s.val for s in SIDES]),
+                shape=(self.height, self.width),
+                p=self.np.array([1 - R_init_chance, R_init_chance]),
+            )
+        else:
+            self.states = RNG.choice(
+                self.np.array([s.val for s in SIDES]),
+                (self.height, self.width),
+                p=self.np.array([1 - R_init_chance, R_init_chance]),
+            )
 
-        if JAX:
-            self.states = np.array(self.states, dtype=int)
+        self.states = self._to_array(self.states, dtype=int)
 
         # 2 (switch state), 2 (incoming ball side), board h, w
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
 
         # 2 (switch state), 2 (incoming ball side), board h, w
         self.switch_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
+
+    def _to_array(self, arr, dtype=None):
+        """Convert to array with optional dtype."""
+        return self.np.array(arr, dtype=dtype)
 
     _switch_render_map = {
         0: f"\\_",
@@ -125,12 +157,16 @@ class Board:
 
     def __repr__(self):
         # FIXME OMG :FP:
-        return self.render_with_distr(np.zeros(self.height))
+        return self.render_with_distr(self.np.zeros(self.height))
 
     def _init_weight(self, main_mode, off_main=0, extra_dims=tuple()):
         if FIXED_WEIGTHS:
-            return np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
-
+            return self.np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
+        
+        if self.np is jnp:
+            global JAX_KEY
+            JAX_KEY, subkey = jrandom.split(JAX_KEY)
+            return jrandom.uniform(subkey, extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
         return RNG.random(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
 
         # np.array(..., dtype=np.float16) # can be used for less verbose debug
@@ -144,19 +180,29 @@ class Board:
 
     def _row_n_zeros(self, row_n):
         """returns zeros array size: 2 * row_width"""
-        return np.zeros((2, self.row_width(row_n=row_n)))
+        return self.np.zeros((2, self.row_width(row_n=row_n)))
+
+    def _set_array(self, arr, idx, val):
+        """Set value(s) in array at given index/indices."""
+        if self.np is jnp:
+            return arr.at[idx].set(val)
+        arr[idx] = val
+        return arr
+
+    def _add_array(self, arr, idx, val):
+        """Add value(s) to array at given index/indices."""
+        if self.np is jnp:
+            return arr.at[idx].add(val)
+        arr[idx] += val
+        return arr
 
     def roll_from_pos(self, pos):  # returns each row distributions
-        assert pos < b.row_width(0)
+        assert pos < self.row_width(0)
 
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
         in_distr = self._row_n_zeros(0)
-        if JAX:
-            in_distr = in_distr.at[LEFT_SIDE.val, pos].set(0.5)
-            in_distr = in_distr.at[RIGHT_SIDE.val, pos].set(0.5)
-        else:
-            in_distr[LEFT_SIDE.val, pos] = 0.5
-            in_distr[RIGHT_SIDE.val, pos] = 0.5
+        in_distr = self._set_array(in_distr, (LEFT_SIDE.val, pos), 0.5)
+        in_distr = self._set_array(in_distr, (RIGHT_SIDE.val, pos), 0.5)
 
         per_row_distrs = [in_distr]
 
@@ -205,12 +251,9 @@ class Board:
 
         # To make / support non-deterministic states weights should be lin-comb of corresponding state probs
 
-        if JAX:
-            fall_probs = self._inverse_probs_with_state(
-                self.fall_weights[s, ..., row_n, np.array(range(N))].swapaxes(0, 1), s
-            )
-        else:
-            fall_probs = self._inverse_probs_with_state(self.fall_weights[s, ..., row_n, range(N)].swapaxes(0, 1), s)
+        fall_probs = self._inverse_probs_with_state(
+            self.fall_weights[s, ..., row_n, self._to_array(range(N))].swapaxes(0, 1), s
+        )
 
         return fall_probs
 
@@ -279,23 +322,14 @@ class Board:
 
             if not self.is_wide_row(row_n):
                 # [:-1] and [1:] denote shift of narrow to wide row
-                if JAX:
-                    out_distr = out_distr.at[1, :-1].add(l_sided_out_distr)
-                    out_distr = out_distr.at[0, 1:].add(r_sided_out_distr)
-                else:
-                    out_distr[1][:-1] += l_sided_out_distr
-                    out_distr[0][1:] += r_sided_out_distr
-
+                out_distr = self._add_array(out_distr, (1, slice(None, -1)), l_sided_out_distr)
+                out_distr = self._add_array(out_distr, (0, slice(1, None)), r_sided_out_distr)
             else:
                 # [:-1] and [1:] denote shift of wide to narrow row
                 # TODO FIX MAYBE? This is where balls fall off the board?
                 # TODO FIX MAYBE - ball falling off the board behavior is inconsistent between np and jnp
-                if JAX:
-                    out_distr = out_distr.at[1].add(l_sided_out_distr[1:])
-                    out_distr = out_distr.at[0].add(r_sided_out_distr[:-1])
-                else:
-                    out_distr[1] += l_sided_out_distr[1:]
-                    out_distr[0] += r_sided_out_distr[:-1]
+                out_distr = self._add_array(out_distr, (1,), l_sided_out_distr[1:])
+                out_distr = self._add_array(out_distr, (0,), r_sided_out_distr[:-1])
 
         return out_distr
 
@@ -332,16 +366,10 @@ class Board:
 
             # Basically self.states[rn][new_pos] = 1 - self.states[rn][new_pos]
             if self.states[rn][new_pos] == 1:
-                if JAX:
-                    self.states = self.states.at[rn, new_pos].set(TO_ZERO_FROM_ONE)
-                else:
-                    self.states[rn][new_pos] = TO_ZERO_FROM_ONE
+                self.states = self._set_array(self.states, (rn, new_pos), TO_ZERO_FROM_ONE)
 
             elif self.states[rn][new_pos] == 0:
-                if JAX:
-                    self.states = self.states.at[rn, new_pos].set(TO_ONE_FROM_ZERO)
-                else:
-                    self.states[rn][new_pos] = TO_ONE_FROM_ZERO
+                self.states = self._set_array(self.states, (rn, new_pos), TO_ONE_FROM_ZERO)
 
             if DEBUG:
                 print(f"rn {rn}, pos {pos}, probs {rarr(from_l_r_prop)}, argmax {from_which_side}, new {new_pos}")
@@ -349,12 +377,59 @@ class Board:
             pos = new_pos
 
     def normalize_states(self):
-        if JAX:
-            self.states = self.states.at[self.states == TO_ZERO_FROM_ONE].set(0)
-            self.states = self.states.at[self.states == TO_ONE_FROM_ZERO].set(1)
-        else:
-            self.states[self.states == TO_ZERO_FROM_ONE] = 0
-            self.states[self.states == TO_ONE_FROM_ZERO] = 1
+        self.states = self._set_array(self.states, self.states == TO_ZERO_FROM_ONE, 0)
+        self.states = self._set_array(self.states, self.states == TO_ONE_FROM_ZERO, 1)
+
+    def run_sim(self, n_steps, temp=0, initial_pos=None, render=False, debug=None):
+        """Run simulation for n_steps with given temperature and initial position.
+        
+        Args:
+            n_steps: Number of simulation steps
+            temp: Temperature parameter for probability sampling (default: 0)
+            initial_pos: Starting position (default: center of board)
+            render: Whether to render simulation steps (default: False)
+            debug: Debug mode flag (default: None)
+        
+        Returns:
+            List of positions visited during simulation
+        """
+        history = []
+        pos = initial_pos if initial_pos is not None else (self.width - 1) // 2
+
+        for _ in range(n_steps):
+            if debug:
+                print("rolling from", pos)
+            per_row_distrs = self.roll_from_pos(pos)
+
+            # FIXME maybe? this ignores "from L / R" out bins, should it be that or should we forward this to the next roll input?
+            out_distr_flat = per_row_distrs[-1].sum(0)
+            pos = sample_probs_with_temp(out_distr_flat, temp)
+            pos = min(pos, self.row_width(0) - 1)
+
+            self.update_states(pos, per_row_distrs, temp)
+            if not debug and render:  # with updates now
+                print(self.render_with_distr(per_row_distrs))
+
+            if debug is not None:
+                print("chose", pos, "from", rarr(out_distr_flat))
+            else:
+                print("chose:", pos)
+
+            if not debug and render:
+                time.sleep(RENDER)
+
+            self.normalize_states()
+            history.append(int(pos) if isinstance(pos, (int, float)) else int(pos.item()))  # handle both numpy and jax arrays
+
+        return history
+
+    def _sample_choice(self, size, p=None):
+        """Sample from range(size) with given probabilities."""
+        if self.np is jnp:
+            global JAX_KEY
+            JAX_KEY, subkey = jrandom.split(JAX_KEY)
+            return int(jrandom.choice(subkey, size, p=p))
+        return RNG.choice(size, 1, p=p)
 
 
 def sample_probs_with_temp(probs, temp=1.0):
@@ -375,6 +450,10 @@ def sample_probs_with_temp(probs, temp=1.0):
     softmax *= mask
     softmax /= softmax.sum()
 
+    if JAX:
+        global JAX_KEY
+        JAX_KEY, subkey = jrandom.split(JAX_KEY)
+        return int(jrandom.choice(subkey, len(softmax), p=softmax))
     return RNG.choice(len(softmax), 1, p=softmax)
 
 
@@ -389,47 +468,22 @@ N = 100
 temp = 0  # .1
 # DEBUG = 0  # also set in the begining
 if __name__ == "__main__":
-    history = []
-
     b = Board(
         15,
         28,
         R_init_chance=0.5,
-        offbalance=1 / 8,  # because our distr rendering can show only 8 vals - this better be >=1/8
+        offbalance=1/8,  # because our distr rendering can show only 8 vals - this better be >=1/8
     )
 
-    # print(b)
-
-    pos = (b.width - 1) // 2
-    for _ in range(N):
-        if DEBUG:
-            print("rolling from", pos)
-        per_row_distrs = b.roll_from_pos(pos)
-
-        # FIXME maybe? this ignores "from L / R" out bins, should it be that or should we forward this to the next roll input?
-        out_distr_flat = per_row_distrs[-1].sum(0)
-        pos = sample_probs_with_temp(out_distr_flat, temp)
-        pos = min(pos, b.row_width(0) - 1)
-
-        b.update_states(pos, per_row_distrs, temp)
-        if not DEBUG and RENDER:  # with updates now
-            print(b.render_with_distr(per_row_distrs))
-
-        if DEBUG is not None:
-            print("chose", pos, "from", rarr(out_distr_flat))
-        else:
-            print("chose:", pos)
-
-        if not DEBUG and RENDER:
-            time.sleep(RENDER)
-
-        b.normalize_states()
-
-        # history.append(int(pos[0]))  # int - to unwrap from jax
+    history = b.run_sim(
+        n_steps=N,
+        temp=temp,
+        render=RENDER,
+        debug=DEBUG
+    )
 
     # # print(history)
     # from collections import Counter
-
     # for _ in Counter(zip(history, history[1:])).most_common():
     #     print(_)
 
