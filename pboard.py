@@ -104,7 +104,7 @@ else:
 
 
 class Board:
-    block_chars = ["0", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    block_chars = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
 
     def __init__(self, width, height, R_init_chance=False, offbalance=False, np_impl=None, jitter_weights=False, verbose=0, force_np_random=False) -> None:
         assert height / 2 == height // 2, "board height should be even number"
@@ -401,7 +401,7 @@ class Board:
         self.states = _set_array_where(self.states, TO_ZERO_FROM_ONE, 0)
         self.states = _set_array_where(self.states, TO_ONE_FROM_ZERO, 1)
 
-    def run_sim(self, n_steps, temp=0, initial_pos=None, render=0, verbose=None):
+    def run_sim(self, n_steps, temp=0, initial_pos=None, render=0, render_delay=0.1, verbose=None):
         """Run simulation for n_steps with given temperature and initial position.
         
         Args:
@@ -447,6 +447,8 @@ class Board:
                 print(self)
             if render >= 2:  # Show board with distribution
                 print(self.render_with_distr(per_row_distrs))
+            if render > 0 and render_delay > 0:
+                time.sleep(render_delay)
 
             if verbose == 0:
                 print(pos, end=" ", flush=True)  # Print just the position
@@ -560,11 +562,12 @@ import time
 @click.option('--steps', '-n', default=100, help='Number of simulation steps')
 @click.option('--temp', '-t', default=0.0, help='Temperature parameter')
 @click.option('--render', '-r', count=True, help='Render verbosity: 1 for board, 2 for board+distribution')
+@click.option('--render-delay', '-rd', default=0.1, help='Delay between renders in seconds')
 @click.option('--verbose', '-v', default=0, count=True, help='Verbosity level (use multiple times for more detail)')
 @click.option('--seed', '-s', default=0, help='Random seed for reproducibility')
 @click.option('--jitter-weights', is_flag=True, default=False, help='Use randomized weights instead of fixed ones')
 @click.option('--force-np-random', is_flag=True, help='Force using numpy random even with JAX')
-def main(width, height, init_chance_r, offbalance, steps, temp, render, verbose, seed, jitter_weights, force_np_random):
+def main(width, height, init_chance_r, offbalance, steps, temp, render, render_delay, verbose, seed, jitter_weights, force_np_random):
     """Run the tumbling simulation with specified parameters."""
     # Initialize random state with provided seed
     initialize_random_state(seed)
@@ -586,6 +589,7 @@ def main(width, height, init_chance_r, offbalance, steps, temp, render, verbose,
         n_steps=steps,
         temp=temp,
         render=render,
+        render_delay=render_delay
     )
     import sys
     print('JAX', JAX, file=sys.stderr)
