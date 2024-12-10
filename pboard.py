@@ -22,6 +22,7 @@ def get_np_module(use_jax=True):
 try:
     import jax.numpy as jnp
     import jax.random as jrandom
+    import jax
     np = get_np_module(use_jax=True)
     JAX = True
     JAX_KEY = jrandom.PRNGKey(0)
@@ -51,8 +52,10 @@ RESET_COLOR = "\033[0m"
 RENDER_SPACER = "  "
 
 from enum import Enum
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import click
+import time
+from functools import wraps
 
 Side = namedtuple("Side", ["val", "name"])
 
@@ -69,33 +72,66 @@ TO_ONE_FROM_ZERO = -1
 PSEUDO_TO_TRUE_STATE = {TO_ZERO_FROM_ONE: 0, TO_ONE_FROM_ZERO: 1, 0: 0, 1: 1}
 
 
+JIT = True
+
+if JAX:
+    def _set_array(arr, idx, val):
+        return arr.at[idx].set(val)
+    
+    def _add_array(arr, idx, val):
+        return arr.at[idx].add(val)
+
+    def _set_array_where(arr, val, val_to_set):
+        return jnp.where(arr == val, val_to_set, arr)
+
+    if JIT:
+        _set_array = jax.jit(_set_array)
+        _add_array = jax.jit(_add_array)
+        _set_array_where = jax.jit(_set_array_where)
+
+else:
+    def _set_array(arr, idx, val):
+        arr[idx] = val
+        return arr
+    
+    def _add_array(arr, idx, val):
+        arr[idx] += val
+        return arr
+
+    def _set_array_where(arr, val, val_to_set):
+        arr[arr == val] = val_to_set
+        return arr
+
+
 class Board:
     block_chars = ["0", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
 
-    def __init__(self, width, height, R_init_chance=False, offbalance=False, np_impl=None, fixed_weights=True, verbose=0) -> None:
+    def __init__(self, width, height, R_init_chance=False, offbalance=False, np_impl=None, jitter_weights=False, verbose=0, force_np_random=False) -> None:
         assert height / 2 == height // 2, "board height should be even number"
         self.width = width
         self.height = height
         self.np = np_impl if np_impl is not None else np
-        self.fixed_weights = fixed_weights
+        self.jitter_weights = jitter_weights
         self.verbose = verbose
+        self.force_np_random = force_np_random
 
-    
-        global jnp
-        if self.np is jnp:
+        
+        # Initialize board states
+        p = self.np.array([1 - R_init_chance, R_init_chance])
+        if self.np is jnp and not force_np_random:
             global JAX_KEY
             JAX_KEY, subkey = jrandom.split(JAX_KEY)
             self.states = jrandom.choice(
                 subkey,
                 self.np.array([s.val for s in SIDES]),
                 shape=(self.height, self.width),
-                p=self.np.array([1 - R_init_chance, R_init_chance]),
+                p=p,
             )
         else:
             self.states = RNG.choice(
                 self.np.array([s.val for s in SIDES]),
                 (self.height, self.width),
-                p=self.np.array([1 - R_init_chance, R_init_chance]),
+                p=p,
             )
 
         self.states = self._to_array(self.states, dtype=int)
@@ -140,8 +176,8 @@ class Board:
             else:
                 # For output row, use input row width
                 expected_width = self.row_width(0)
-            assert row_distr.shape == (2, expected_width), \
-                f"Distribution for row {rn} has wrong shape: {row_distr.shape} != (2, {expected_width})"
+            assert row_distr.shape == (len(SIDES), expected_width), \
+                f"Distribution for row {rn} has wrong shape: {row_distr.shape} != ({len(SIDES)}(len(SIDES)), {expected_width})"
 
         res = []
         two_char_rows = self._two_char_board()
@@ -179,14 +215,14 @@ class Board:
 
     def __repr__(self):
         # FIXME OMG :FP:
-        empty_distr_row_n = lambda row_n: self.np.zeros((2,self.row_width(row_n)))
+        empty_distr_row_n = lambda row_n: self.np.zeros((len(SIDES), self.row_width(row_n)))
         empty_distr = [empty_distr_row_n(row_n) for row_n in range(0, self.height)]
         return self.render_with_distr(empty_distr)
 
     def _init_weight(self, main_mode, off_main=0, extra_dims=tuple()):
-        if self.fixed_weights:
+        if not self.jitter_weights:
             return self.np.ones(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
-        if self.np is jnp:
+        if self.np is jnp and not self.force_np_random:
             key = jrandom.PRNGKey(0)
             return jrandom.uniform(key, extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
         return RNG.random(extra_dims + (self.height, self.width)) * off_main + main_mode * (1 - off_main)
@@ -201,10 +237,10 @@ class Board:
         return self.width if self.is_wide_row(row_n) else (self.width - 1)
 
     def _row_n_zeros(self, row_n):
-        """returns zeros array size: 2 * row_width"""
+        """returns zeros array size: len(SIDES) * row_width"""
         if self.verbose >= 2:
             print("row", row_n, "width", self.row_width(row_n))
-        return self.np.zeros((2, self.row_width(row_n=row_n)))
+        return self.np.zeros((len(SIDES), self.row_width(row_n=row_n)))
 
     def _roll_one_row(self, in_distr, row_n):
         """
@@ -270,16 +306,21 @@ class Board:
             if self.verbose >= 3:
                 print(sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr)
 
+            # print(out_distr.shape, self.np.arange(self.row_width(row_n) - 1).shape, l_sided_out_distr.shape)
+            # print(out_distr.shape, self.np.arange(1, self.row_width(row_n)), r_sided_out_distr.shape)
+
             if not self.is_wide_row(row_n):
                 # [:-1] and [1:] denote shift of narrow to wide row
-                out_distr = self._add_array(out_distr, (1, slice(None, -1)), l_sided_out_distr)
-                out_distr = self._add_array(out_distr, (0, slice(1, None)), r_sided_out_distr)
+                # out_distr = _add_array(out_distr, (1, slice(None, -1)), l_sided_out_distr)
+                out_distr = _add_array(out_distr, (1, self.np.arange(self.row_width(row_n))), l_sided_out_distr)
+                # out_distr = _add_array(out_distr, (0, slice(1, None)), r_sided_out_distr)
+                out_distr = _add_array(out_distr, (0, self.np.arange(1, self.row_width(row_n)+1)), r_sided_out_distr)
             else:
                 # [:-1] and [1:] denote shift of wide to narrow row
                 # TODO FIX MAYBE? This is where balls fall off the board?
                 # TODO FIX MAYBE - ball falling off the board behavior is inconsistent between np and jnp
-                out_distr = self._add_array(out_distr, (1,), l_sided_out_distr[1:])
-                out_distr = self._add_array(out_distr, (0,), r_sided_out_distr[:-1])
+                out_distr = _add_array(out_distr, (1,), l_sided_out_distr[1:])
+                out_distr = _add_array(out_distr, (0,), r_sided_out_distr[:-1])
 
         return out_distr
 
@@ -346,10 +387,10 @@ class Board:
 
             # Basically self.states[rn][new_pos] = 1 - self.states[rn][new_pos]
             if self.states[rn][new_pos] == 1:
-                self.states = self._set_array(self.states, (rn, new_pos), TO_ZERO_FROM_ONE)
+                self.states = _set_array(self.states, (rn, new_pos), TO_ZERO_FROM_ONE)
 
             elif self.states[rn][new_pos] == 0:
-                self.states = self._set_array(self.states, (rn, new_pos), TO_ONE_FROM_ZERO)
+                self.states = _set_array(self.states, (rn, new_pos), TO_ONE_FROM_ZERO)
 
             if self.verbose >= 2:
                 print(f"rn {rn}, pos {pos}, probs {rarr(from_l_r_prop)}, argmax {from_which_side}, new {new_pos}")
@@ -357,8 +398,8 @@ class Board:
             pos = new_pos
 
     def normalize_states(self):
-        self.states = self._set_array(self.states, self.states == TO_ZERO_FROM_ONE, 0)
-        self.states = self._set_array(self.states, self.states == TO_ONE_FROM_ZERO, 1)
+        self.states = _set_array_where(self.states, TO_ZERO_FROM_ONE, 0)
+        self.states = _set_array_where(self.states, TO_ONE_FROM_ZERO, 1)
 
     def run_sim(self, n_steps, temp=0, initial_pos=None, render=0, verbose=None):
         """Run simulation for n_steps with given temperature and initial position.
@@ -394,13 +435,11 @@ class Board:
             per_row_distrs = self.roll_from_pos(pos)
 
             out_distr = per_row_distrs[-1]
-            out_distr_flat = out_distr.reshape(-1)
+            out_distr_reduced = out_distr.sum(axis=0) # output bins are not direction dependent
             
-            # Apply temperature and sample
-            if temp > 0:
-                out_distr_flat = sample_probs_with_temp(out_distr_flat, temp)
-            pos = self._sample_choice(len(out_distr_flat), out_distr_flat)
-            pos = min(pos, self.row_width(0) - 1)
+            # Sample position based on temperature
+            pos = sample_probs_with_temp(out_distr_reduced, temp, self.force_np_random)
+            pos = min(pos, self.row_width(0) - 1) # TODO FIXME last row overflow - stop or wrap or something
 
             self.update_states(pos, per_row_distrs, temp)
             
@@ -414,11 +453,11 @@ class Board:
             elif verbose == 1:
                 print("chose:", pos)
             elif self.verbose == 2:
-                print("chose", pos, "from", rarr(out_distr_flat))
+                print("chose", pos, "from", rarr(out_distr_reduced))
             elif self.verbose >= 3:
                 print("per row distrs:", rarr(per_row_distrs))
                 print("out distr:", rarr(per_row_distrs[-1]))
-                print("chose:", pos, "from", rarr(out_distr_flat))
+                print("chose:", pos, "from", rarr(out_distr))
 
 
             self.normalize_states()
@@ -429,43 +468,30 @@ class Board:
 
         return history
 
-    def _sample_choice(self, size, p=None):
-        """Sample from range(size) with given probabilities."""
-        if p is None:
-            if self.np is jnp:
-                key = jrandom.PRNGKey(0)
-                return int(jrandom.randint(key, 0, size, ()))
-            return RNG.integers(0, size)
+    # def _sample_choice(self, size, p=None):
+    #     """Sample from range(size) with given probabilities."""
+    #     if p is None:
+    #         if self.np is jnp and not self.force_np_random:
+    #             key = jrandom.PRNGKey(0)
+    #             return int(jrandom.randint(key, 0, size, ()))
+    #         return RNG.integers(0, size)
 
-        # Normalize probabilities
-        p = p / p.sum() if p.sum() > 0 else self.np.ones_like(p) / len(p)
+    #     # Normalize probabilities
+    #     p = (p / p.sum()) if p.sum() > 0 else (self.np.ones_like(p) / len(p))
 
-        if self.np is jnp:
-            key = jrandom.PRNGKey(0)
-            return int(jrandom.choice(key, size, p=p))
-        return int(RNG.choice(size, 1, p=p))
+    #     if self.np is jnp and not self.force_np_random:
+    #         key = jrandom.PRNGKey(0)
+    #         return int(jrandom.choice(key, size, p=p))
+    #     return int(RNG.choice(size, 1, p=raw_numpy.array(p))[0])
 
-    def _set_array(self, arr, idx, val):
-        """Set value(s) in array at given index/indices."""
-        if self.np is jnp:
-            return arr.at[idx].set(val)
-        arr[idx] = val
-        return arr
-
-    def _add_array(self, arr, idx, val):
-        """Add value(s) to array at given index/indices."""
-        if self.np is jnp:
-            return arr.at[idx].add(val)
-        arr[idx] += val
-        return arr
 
     def roll_from_pos(self, pos):  # returns each row distributions
         assert pos < self.row_width(0)
 
         # starting with prob = [0, 0, ..., 1 (pos), 0, ..., 0]
         in_distr = self._row_n_zeros(0)
-        in_distr = self._set_array(in_distr, (LEFT_SIDE.val, pos), 0.5)
-        in_distr = self._set_array(in_distr, (RIGHT_SIDE.val, pos), 0.5)
+        in_distr = _set_array(in_distr, (LEFT_SIDE.val, pos), 0.5)
+        in_distr = _set_array(in_distr, (RIGHT_SIDE.val, pos), 0.5)
 
         per_row_distrs = [in_distr]
 
@@ -497,27 +523,27 @@ class Board:
         """
         return probs + state - 2 * probs * state
 
-def sample_probs_with_temp(probs, temp=1.0):
+def sample_probs_with_temp(probs, temp=0, force_np_random=False):
     if not temp:
         return probs.argmax()
 
     # We wanna sample only "reachable from input bins"
     # so we use mask for all probs that are === 0
     # so it's non-standard "sample with temp"
-    mask = raw_numpy.array(probs != 0.0)
+    mask = np.array(probs != 0.0)
 
     # Sample according to the adjusted probabilities
     scaled_logits = probs / temp
     # Compute softmax values
-    exp_logits = raw_numpy.array(exp_logits).astype("float64")
-    softmax = raw_numpy.array(exp_logits).astype("float64")
+    exp_logits = np.array(scaled_logits).astype("float64")
+    softmax = np.array(exp_logits).astype("float64")
     softmax *= mask
     softmax /= softmax.sum()
 
-    if JAX:
+    if JAX and not force_np_random:
         key = jrandom.PRNGKey(0)
         return int(jrandom.choice(key, len(softmax), p=softmax))
-    return RNG.choice(len(softmax), 1, p=softmax)
+    return RNG.choice(len(softmax), 1, p=raw_numpy.array(softmax))[0]
 
 
 def rarr(arr):
@@ -536,22 +562,24 @@ import time
 @click.option('--render', '-r', count=True, help='Render verbosity: 1 for board, 2 for board+distribution')
 @click.option('--verbose', '-v', default=0, count=True, help='Verbosity level (use multiple times for more detail)')
 @click.option('--seed', '-s', default=0, help='Random seed for reproducibility')
-@click.option('--fixed-weights/--no-fixed-weights', default=True, help='Use fixed weights')
-def main(width, height, init_chance_r, offbalance, steps, temp, render, verbose, seed, fixed_weights):
+@click.option('--jitter-weights', is_flag=True, default=False, help='Use randomized weights instead of fixed ones')
+@click.option('--force-np-random', is_flag=True, help='Force using numpy random even with JAX')
+def main(width, height, init_chance_r, offbalance, steps, temp, render, verbose, seed, jitter_weights, force_np_random):
     """Run the tumbling simulation with specified parameters."""
     # Initialize random state with provided seed
     initialize_random_state(seed)
-    if JAX:
+    if JAX and not force_np_random:
         global JAX_KEY
         JAX_KEY = jrandom.PRNGKey(seed)
 
     b = Board(
-        width,
-        height,
+        width=width,
+        height=height,
         R_init_chance=init_chance_r,
         offbalance=offbalance,
-        fixed_weights=fixed_weights,
-        verbose = verbose  
+        jitter_weights=jitter_weights,
+        verbose=verbose,
+        force_np_random=force_np_random
     )
 
     history = b.run_sim(
@@ -559,8 +587,8 @@ def main(width, height, init_chance_r, offbalance, steps, temp, render, verbose,
         temp=temp,
         render=render,
     )
-
-    print('JAX', JAX)
+    import sys
+    print('JAX', JAX, file=sys.stderr)
 
 if __name__ == "__main__":
     main()
