@@ -322,6 +322,18 @@ class Board:
                 out_distr = _add_array(out_distr, (1,), l_sided_out_distr[1:])
                 out_distr = _add_array(out_distr, (0,), r_sided_out_distr[:-1])
 
+                # FIXed: This is where balls fall off the board
+                out_distr = _add_array(out_distr, (0,self.np.arange(1)), l_sided_out_distr[:1])
+                out_distr = _add_array(out_distr, (1,-1*self.np.arange(1)), r_sided_out_distr[-1:])
+
+            if self.verbose >= 3:
+                print("intermediate out_distr.T", rarr(out_distr.T))
+
+        if self.verbose >= 2:
+            print("final row_n", row_n, "out_distr.T", rarr(out_distr.T))
+
+        # assert out_distr.sum() == 1
+
         return out_distr
 
     def _row_probs(self, row_n):
