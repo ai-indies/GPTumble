@@ -182,36 +182,28 @@ class Board:
         res = []
         two_char_rows = self._two_char_board()
 
+        def make_row(string, is_wide):
+            r_row = "" if is_wide else RENDER_SPACER
+            r_row += string
+            if not is_wide: r_row += RENDER_SPACER
+            res.append(r_row)
+
         # Render board rows
         for rn, (row_distr, two_char_row) in enumerate(zip(distr[:self.height], two_char_rows)):
             is_wide = self.is_wide_row(rn)
             
             # Render ball distribution if any non-zero probabilities
             if row_distr.any():
-                r_row = ""
-                if not is_wide:
-                    r_row += RENDER_SPACER
-                r_row += self._render_ball_distr(row_distr)
-                res.append(r_row)
-
+                make_row(self._render_ball_distr(row_distr), is_wide)
+                
             # Render switch row
-            r_row = ""
-            if not is_wide:
-                r_row += RENDER_SPACER
-            r_row += RENDER_SPACER.join(two_char_row)
-            res.append(r_row)
-
+            make_row(RENDER_SPACER.join(two_char_row), is_wide)
+            
         # Render output distribution if present
         if len(distr) > self.height:
-            output_distr = distr[-1]
-            if output_distr.any():
-                r_row = ""
-                if not self.is_wide_row(0):  # Use input row width
-                    r_row += RENDER_SPACER
-                r_row += self._render_ball_distr(output_distr)
-                res.append(r_row)
+            make_row(self._render_ball_distr(distr[-1]), self.is_wide_row(0))
 
-        return "\n".join(res)
+        return "\n".join([f'|{r}|' for r in res])
 
     def __repr__(self):
         # FIXME OMG :FP:
@@ -238,8 +230,6 @@ class Board:
 
     def _row_n_zeros(self, row_n):
         """returns zeros array size: len(SIDES) * row_width"""
-        if self.verbose >= 2:
-            print("row", row_n, "width", self.row_width(row_n))
         return self.np.zeros((len(SIDES), self.row_width(row_n=row_n)))
 
     def _roll_one_row(self, in_distr, row_n):
@@ -249,11 +239,9 @@ class Board:
         returns: float array of size 2 (sides) * next_row_w
         """
         if self.verbose >= 2:
-            print("rolling row", row_n)
-        out_distr = self._row_n_zeros(row_n + 1)  # it goes to the next row - thus +1
+            print("rolling row", row_n, "width", self.row_width(row_n))
 
-        if self.verbose >= 3:
-            print("sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr")
+        out_distr = self._row_n_zeros(row_n + 1)  # it goes to the next row - thus +1
 
         # TODO this for loop can possibly be optimized to do all in one pass.
         for side, sided_in_distr, fall_probs in zip(SIDES, in_distr, self._row_probs(row_n)):
@@ -299,26 +287,39 @@ class Board:
             #
             # ^ Both of these sets of 4 should constitute a basis of all possible switches as linear combos.
             #
-
+            
+            _end = ' ' if self.verbose == 3 else '\n'
+            if self.verbose >= 3:
+                print("side", side, end=_end)
+            if self.verbose >= 4:
+                print("sided_in_distr", rarr(sided_in_distr), end=_end)
+                print("fall_probs", rarr(fall_probs))
+            
             l_sided_out_distr = sided_in_distr * fall_probs
             r_sided_out_distr = sided_in_distr * (1 - fall_probs)
 
-            if self.verbose >= 3:
-                print(sided_in_distr, fall_probs, l_sided_out_distr, (1 - fall_probs), r_sided_out_distr)
-
-            # print(out_distr.shape, self.np.arange(self.row_width(row_n) - 1).shape, l_sided_out_distr.shape)
-            # print(out_distr.shape, self.np.arange(1, self.row_width(row_n)), r_sided_out_distr.shape)
-
+            if self.verbose >= 5:
+                print("l_sided_out_distr", rarr(l_sided_out_distr))
+            
+            if self.verbose >= 6:
+                print("1 - fall_probs", rarr(1-fall_probs))
+            if self.verbose >= 5:
+                print("r_sided_out_distr", rarr(r_sided_out_distr))
+            
+            
             if not self.is_wide_row(row_n):
                 # [:-1] and [1:] denote shift of narrow to wide row
-                # out_distr = _add_array(out_distr, (1, slice(None, -1)), l_sided_out_distr)
+
                 out_distr = _add_array(out_distr, (1, self.np.arange(self.row_width(row_n))), l_sided_out_distr)
-                # out_distr = _add_array(out_distr, (0, slice(1, None)), r_sided_out_distr)
                 out_distr = _add_array(out_distr, (0, self.np.arange(1, self.row_width(row_n)+1)), r_sided_out_distr)
+                ## Equivalent to:
+                # out_distr = _add_array(out_distr, (1, slice(None, -1)), l_sided_out_distr)
+                # out_distr = _add_array(out_distr, (0, slice(1, None)), r_sided_out_distr)
+                ## But ^ doesn't work with jax``
+
             else:
                 # [:-1] and [1:] denote shift of wide to narrow row
-                # TODO FIX MAYBE? This is where balls fall off the board?
-                # TODO FIX MAYBE - ball falling off the board behavior is inconsistent between np and jnp
+                # Ball falling off the board behavior was inconsistent between np and jnp - but FIXED now?
                 out_distr = _add_array(out_distr, (1,), l_sided_out_distr[1:])
                 out_distr = _add_array(out_distr, (0,), r_sided_out_distr[:-1])
 
@@ -343,8 +344,6 @@ class Board:
         returns:
         fall_probs: float array of size 2 (incoming ball side) * row_width
         """
-        if self.verbose >= 3:
-            print("getting row probs for", row_n)
         # Considering N (row width) switches in states (0s and 1s): s = [s1, ..., sn]
         # and the weight matrix with dimensions:
         # 2 (switch state), 2 (incoming ball side), row, positions
@@ -358,8 +357,8 @@ class Board:
             self.fall_weights[s, ..., row_n, self._to_array(range(N))].swapaxes(0, 1), s
         )
 
-        if self.verbose >= 3:
-            print("fall probs", rarr(fall_probs))
+        if self.verbose >= 6:
+            print("fall probs", rarr(fall_probs), "for row", row_n)
         return fall_probs
 
     @classmethod
@@ -467,11 +466,11 @@ class Board:
             elif verbose == 1:
                 print("chose:", pos)
             elif self.verbose == 2:
-                print("chose", pos, "from", rarr(out_distr_reduced))
+                print("chose", pos, "from", rarr(out_distr_reduced), "sum", out_distr_reduced.sum())
             elif self.verbose >= 3:
                 print("per row distrs:", rarr(per_row_distrs))
                 print("out distr:", rarr(per_row_distrs[-1]))
-                print("chose:", pos, "from", rarr(out_distr))
+                print("chose:", pos, "from", rarr(out_distr), "sum", out_distr.sum(), "<1" if out_distr.sum()<1 else ">=1", )
 
 
             self.normalize_states()
@@ -579,7 +578,8 @@ import time
 @click.option('--seed', '-s', default=0, help='Random seed for reproducibility')
 @click.option('--jitter-weights', is_flag=True, default=False, help='Use randomized weights instead of fixed ones')
 @click.option('--force-np-random', is_flag=True, help='Force using numpy random even with JAX')
-def main(width, height, init_chance_r, offbalance, steps, temp, render, render_delay, verbose, seed, jitter_weights, force_np_random):
+@click.option('--initial-pos', '-ip', default=10, help='Initial position')
+def main(width, height, init_chance_r, offbalance, steps, temp, render, render_delay, verbose, seed, jitter_weights, force_np_random, initial_pos):
     """Run the tumbling simulation with specified parameters."""
     # Initialize random state with provided seed
     initialize_random_state(seed)
@@ -601,7 +601,8 @@ def main(width, height, init_chance_r, offbalance, steps, temp, render, render_d
         n_steps=steps,
         temp=temp,
         render=render,
-        render_delay=render_delay
+        render_delay=render_delay,
+        initial_pos=initial_pos
     )
     import sys
     print('JAX', JAX, file=sys.stderr)
