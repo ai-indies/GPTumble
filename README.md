@@ -1,6 +1,10 @@
 ## Jax / numpy simulation of a stochastic turing tumble like game
 
-Hopefully can be made traiable
+Hopefully can be made traiable =)
+
+https://github.com/user-attachments/assets/ee51997d-8a76-4da0-84be-f8d1fef9a624
+
+![Image](https://github.com/user-attachments/assets/ed0e3955-227c-42a1-b857-7edccf2e557d)
 
 ### TODO
 ML
