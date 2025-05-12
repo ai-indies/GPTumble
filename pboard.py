@@ -136,6 +136,9 @@ class Board:
 
         self.states = self._to_array(self.states, dtype=int)
 
+        if JAX:
+            self.states = np.array(self.states)
+
         # 2 (switch state), 2 (incoming ball side), board h, w
         self.fall_weights = self._init_weight(0, offbalance, extra_dims=(len(SIDES), len(SIDES)))
 
@@ -231,6 +234,7 @@ class Board:
     def _row_n_zeros(self, row_n):
         """returns zeros array size: len(SIDES) * row_width"""
         return self.np.zeros((len(SIDES), self.row_width(row_n=row_n)))
+
 
     def _roll_one_row(self, in_distr, row_n):
         """
@@ -404,6 +408,7 @@ class Board:
                 self.states = _set_array(self.states, (rn, new_pos), TO_ONE_FROM_ZERO)
 
             if self.verbose >= 2:
+
                 print(f"rn {rn}, pos {pos}, probs {rarr(from_l_r_prop)}, argmax {from_which_side}, new {new_pos}")
                 print(self)
             pos = new_pos
@@ -606,6 +611,7 @@ def main(width, height, init_chance_r, offbalance, steps, temp, render, render_d
     )
     import sys
     print('JAX', JAX, file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()
