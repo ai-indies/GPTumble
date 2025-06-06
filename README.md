@@ -1,6 +1,6 @@
 ## Jax / numpy simulation of a stochastic turing tumble like game
 
-Hopefully can be made traiable =)
+Hopefully can be made trainable then it will be first (to our knowledge) physically realizable autoregressive transformer-decoder-ish-ly-kinda-maybe model.
 
 https://github.com/user-attachments/assets/ee51997d-8a76-4da0-84be-f8d1fef9a624
 
